@@ -236,27 +236,68 @@ class Listener {
       this.stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}});
     } else {
       // One share gives system sound and, if "Бачити екран" is on, frames for the answers.
-      this.stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {frameRate: 1, displaySurface: 'monitor'}, systemAudio: 'include', monitorTypeSurfaces: 'include',
-        audio: {echoCancellation: false, noiseSuppression: false, autoGainControl: false, suppressLocalAudioPlayback: false}});
-      if (!this.stream.getAudioTracks().length) {
-        this.stream.getTracks().forEach(t => t.stop());
-        throw new Error('звук не передано. Вибери весь екран і ввімкни перемикач звуку');
+      // If Chrome cannot open the sound, audio.ps1 supplies it, and later shares ask for the screen only.
+      try {
+        this.stream = await navigator.mediaDevices.getDisplayMedia({
+          video: {frameRate: 1, displaySurface: 'monitor'}, systemAudio: cfg.nativeAudio ? 'exclude' : 'include', monitorTypeSurfaces: 'include',
+          audio: cfg.nativeAudio ? false : {echoCancellation: false, noiseSuppression: false, autoGainControl: false, suppressLocalAudioPlayback: false}});
+      } catch (e) {
+        if (e.name !== 'NotReadableError') throw e; // cancelled by the user
+        this.stream = new MediaStream();
       }
     }
     this.active = true;
-    this.stream.getTracks().forEach(t => t.onended = () => this.stop());
-    this.ctx = new AudioContext({sampleRate: 16000});
+    this.stream.getTracks().forEach(t => t.onended = () => {
+      if (t.kind === 'audio' && this.src === 'sys' && this.stream.getVideoTracks()[0]?.readyState === 'live') this.switchToNative();
+      else this.stop();
+    });
+    if (this.stream.getAudioTracks().length) await this.openTrack();
+    else await this.openNative();
+    if (!this.active) return;
+    this.pauseButton();
+    const video = this.stream.getVideoTracks()[0];
+    if (video) screenView.follow(video);
+    this.connect();
+  }
+  async openTrack() {
+    // sinkId none: processing does not depend on the output device
+    this.ctx = new AudioContext({sampleRate: 16000, sinkId: {type: 'none'}});
     await this.ctx.audioWorklet.addModule('data:text/javascript,' + encodeURIComponent(WORKLET)); // blob: is blocked on file://
     const input = this.ctx.createMediaStreamSource(new MediaStream(this.stream.getAudioTracks()));
     const node = new AudioWorkletNode(this.ctx, 'pcm', {numberOfOutputs: 1});
     node.port.onmessage = e => this.push(e.data);
     input.connect(node).connect(this.ctx.destination); // outputs silence
     await this.ctx.resume();
-    this.pauseButton();
-    const video = this.stream.getVideoTracks()[0];
-    if (video) screenView.follow(video);
-    this.connect();
+  }
+  async switchToNative() {
+    this.ctx?.close().catch(() => {});
+    try { await this.openNative(); } catch (e) { this.stop(); status('Помилка: ' + e.message, true); }
+  }
+  // Resolves once the helper is reachable; it keeps retrying a busy device by itself.
+  openNative() {
+    const p = new URLSearchParams(location.hash.slice(1));
+    if (!p.get('port')) return Promise.reject(new Error('звук не передано. Запусти через start.bat або ввімкни перемикач звуку під час вибору екрана'));
+    return new Promise((resolve, reject) => {
+      let opened = false, tries = 0;
+      const open = () => {
+        if (!this.active) return resolve();
+        const w = this.native = new WebSocket(`ws://localhost:${p.get('port')}/?t=${p.get('t')}`);
+        w.binaryType = 'arraybuffer';
+        w.onmessage = e => {
+          if (typeof e.data !== 'string') return this.push(e.data);
+          opened = true; tries = 0; resolve();
+          if (e.data === 'ok') { cfg.nativeAudio = true; persist(); status(this.paused ? 'Пауза' : 'Слухаю (звук напряму з Windows)'); }
+          else status('Windows не віддає звук, пробую ще: ' + e.data.slice(4), true);
+        };
+        w.onclose = () => {
+          if (!this.active || w !== this.native) return;
+          if (++tries < 12) return setTimeout(open, 1000);
+          const err = new Error('помічник звуку не відповідає. Закрий Koks і запусти start.bat');
+          if (opened) { this.stop(); status('Помилка: ' + err.message, true); } else reject(err);
+        };
+      };
+      open();
+    });
   }
   // Pause keeps the mic/screen share, but no audio is sent anywhere.
   setPaused(on) {
@@ -346,7 +387,7 @@ class Listener {
     if (this.src === 'sys') screenView.stop();
     this.stream?.getTracks().forEach(t => t.stop());
     if (this.ctx?.state !== 'closed') this.ctx?.close();
-    this.ws?.close(); this.paused = false; this.pauseButton();
+    this.native?.close(); this.ws?.close(); this.paused = false; this.pauseButton();
     if (this.line) { this.line.classList.remove('interim'); this.line = null; }
     turns[this.src]?.close(); delete listeners[this.src]; status('Зупинено');
   }
@@ -356,7 +397,9 @@ async function toggle(src, button) {
   if (listeners[src]) return listeners[src].stop();
   if (!keyRing.all().length) { openSettings(); return status('Вкажи ключ Gemini API', true); }
   const l = listeners[src] = new Listener(src, button);
-  try { await l.start(); } catch (e) { l.stop(); status('Помилка: ' + e.message, true); }
+  try { await l.start(); } catch (e) {
+    l.stop(); status('Помилка: ' + e.message, true);
+  }
 }
 $('bMic').onclick = () => toggle('mic', $('bMic'));
 $('bSys').onclick = () => toggle('sys', $('bSys'));
