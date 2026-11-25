@@ -23,6 +23,9 @@ h2{margin:0;padding:8px 14px;font-size:13px;color:var(--dim);font-weight:600}
 .line{margin:0 0 8px}.line b{font-size:12px;margin-right:6px}
 .mic b{color:var(--mic)}.sys b{color:var(--sys)}.interim{opacity:.55;font-style:italic}
 .card{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:10px 12px;margin-bottom:10px}
+.c0{--c:#4f8fe8;background:#182740}.c1{--c:#e0954a;background:#37271a}.c2{--c:#4dba7c;background:#173025}
+.c3{--c:#a981ee;background:#2a2140}.c4{--c:#e06c9f;background:#3a1d2b}.c5{--c:#3fb8bd;background:#143134}
+.card[class*=" c"]{border-color:var(--c);border-left-width:5px}.card .q{color:#b9c2cd}
 .q{color:var(--dim);font-size:13px;margin-bottom:6px}
 .a{font-size:17px;white-space:pre-wrap;outline:none}
 .st{margin-left:auto;font-size:12px;color:var(--ok)}.draft .st{color:var(--sys)}.draft{border-style:dashed}
@@ -436,7 +439,9 @@ class Turn {
 
 class Card {
   constructor(q) {
-    this.el = document.createElement('div'); this.el.className = 'card draft';
+    this.el = document.createElement('div'); const prev = $('answers').lastElementChild;
+    this.color = ((prev?._color ?? -1) + 1) % 6; // colors repeat, but never twice in a row
+    this.el.className = 'card draft c' + this.color; this.el._color = this.color;
     this.qEl = document.createElement('div'); this.qEl.className = 'q';
     this.aEl = document.createElement('div'); this.aEl.className = 'a'; this.aEl.contentEditable = 'true';
     this.aEl.oninput = () => { this.edited = true; this.setState(true); }; // never overwrite the user's own edit
